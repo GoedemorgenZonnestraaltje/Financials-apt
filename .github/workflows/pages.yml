@@ -1,4 +1,4 @@
-# Pages (ADR 0005 in GoedemorgenZonnestraaltje/Financials): zet de apt-bron van Financials
+# Pages (ADR 0008 in GoedemorgenZonnestraaltje/Financials): zet de apt-bron van Financials
 # op GitHub Pages. De releases in deze repository blijven de bron; deze workflow maakt
 # er een kopie van met per kanaal de index en het nieuwste pakket:
 #

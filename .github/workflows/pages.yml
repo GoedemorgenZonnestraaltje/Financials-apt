@@ -1,0 +1,85 @@
+# Pages (ADR 0005 in GoedemorgenZonnestraaltje/Financials): zet de apt-bron van Financials
+# op GitHub Pages. De releases in deze repository blijven de bron; deze workflow maakt
+# er een kopie van met per kanaal de index en het nieuwste pakket:
+#
+#   apt/{InRelease,Release,Release.gpg,Packages,Packages.gz,laatste.json,...}
+#   v<versie>/financials_<versie>_amd64.deb
+#   test/{...}
+#   test-v<versie>/financials-test_<versie>_amd64.deb
+#
+# Dezelfde opbouw als de download-URL's van de releases, dus Packages en laatste.json
+# werken op beide plaatsen. De site wordt in één keer vervangen: apt ziet nooit een
+# half bijgewerkte index.
+#
+# Wordt gestart door de workflows Release en Testversie in Financials, na het uploaden.
+# Handmatig starten kan ook (Run workflow); dat herstelt de site uit de releases.
+name: Pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Elke run leest de releases zoals ze op dat moment zijn. Een wachtende run mag dus
+# vervangen worden door een nieuwere; een lopende publicatie maakt hij wel af.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  bouw:
+    name: Site samenstellen uit de releases
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Index en nieuwste pakket per kanaal ophalen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          for SUITE in apt test; do
+            if ! gh release view "$SUITE" > /dev/null 2>&1; then
+              echo "Kanaal $SUITE: geen release, overgeslagen"
+              continue
+            fi
+            gh release download "$SUITE" --dir "site/$SUITE"
+            # Elk pakket uit de index (er staat er één in) ophalen en controleren.
+            awk '/^Filename: / {f=$2} /^SHA256: / {print $2 "  " f}' "site/$SUITE/Packages" \
+              > "site/$SUITE.sha256"
+            test -s "site/$SUITE.sha256" || { echo "::error::Lege index in kanaal $SUITE"; exit 1; }
+            while read -r _ PAD; do
+              TAG="${PAD%/*}"
+              echo "Kanaal $SUITE: $PAD"
+              gh release download "$TAG" --pattern "${PAD##*/}" --dir "site/$TAG"
+            done < "site/$SUITE.sha256"
+            (cd site && sha256sum --check --strict "$SUITE.sha256")
+            rm "site/$SUITE.sha256"
+          done
+          cat > site/index.html <<HTML
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>Financials apt-bron</title>
+          <p>Apt-bron voor Financials. Niet zelf downloaden: het pakket stelt deze bron zelf in.
+          Installatiepakketten staan bij de
+          <a href="https://github.com/$GH_REPO/releases/latest">releases</a>.</p>
+          HTML
+          find site -type f -printf '%10s  %p\n' | sort -k2
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  publiceer:
+    name: Publiceren op GitHub Pages
+    needs: bouw
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - id: pages
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,78 @@
+# Workflow voor de openbare repository Financials-apt (ADR 0008).
+# Hoort daar te staan als .github/workflows/pages.yml; dit is de bron ervan.
+#
+# Zet de apt-bron op GitHub Pages samen uit de releases: per kanaal (apt, test) de
+# indexbestanden uit de gelijknamige release, en het pakket waar Packages naar wijst
+# uit de bijbehorende versie-release, gecontroleerd op SHA256. Daarna publiceert de
+# workflow de hele site in één keer. Gestart door scripts/publiceer-pages.sh in
+# Financials (Release en Testversie), of met de hand: Actions → Pages → Run workflow.
+name: Pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Eén publicatie tegelijk. Een wachtende run wordt vervangen door een nieuwere; die
+# leest de releases toch opnieuw (scripts/publiceer-pages.sh wacht dan op de nieuwere).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  bouwen:
+    name: Site samenstellen uit de releases
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Index en pakketten ophalen
+        env:
+          BASIS: https://github.com/${{ github.repository }}/releases/download
+        run: |
+          set -euo pipefail
+          # Downloads van releasebestanden geven soms een 504: daarom opnieuw proberen.
+          haal() { curl -fsSL --retry 6 --retry-all-errors --retry-delay 5 --max-time 600 -o "$2" "$1"; }
+          mkdir -p site
+          AANTAL=0
+          for KANAAL in apt test; do
+            if ! curl -fsSIL --retry 3 --retry-all-errors -o /dev/null "$BASIS/$KANAAL/InRelease"; then
+              echo "Kanaal $KANAAL: geen release, overgeslagen"
+              continue
+            fi
+            mkdir -p "site/$KANAAL"
+            for F in InRelease Release Release.gpg Packages Packages.gz laatste.json \
+                     financials-archive-keyring.asc; do
+              haal "$BASIS/$KANAAL/$F" "site/$KANAAL/$F"
+            done
+            # Elk pakket in Packages: Filename is relatief aan de basis-URL, dus
+            # <release>/<bestand>, en komt op dezelfde plek op de site.
+            awk '/^Filename: /{f=$2} /^SHA256: /{s=$2} /^$/{if(f)print f, s; f=s=""}
+                 END{if(f)print f, s}' "site/$KANAAL/Packages" |
+            while read -r PAD SHA; do
+              case "$PAD" in */*/*|/*|*..*|"") echo "::error::Onverwacht pad: $PAD"; exit 1 ;; esac
+              mkdir -p "site/$(dirname "$PAD")"
+              haal "$BASIS/$PAD" "site/$PAD"
+              echo "$SHA  site/$PAD" | sha256sum -c -
+            done
+            AANTAL=$((AANTAL + 1))
+          done
+          [ "$AANTAL" -ge 1 ] || { echo "::error::Geen enkel kanaal gevonden"; exit 1; }
+          touch site/.nojekyll
+          find site -type f -printf '%P\t%s\n' | sort
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  publiceren:
+    name: Publiceren op GitHub Pages
+    needs: bouwen
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
